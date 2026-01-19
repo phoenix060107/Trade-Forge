@@ -1,57 +1,69 @@
-import { LivePrice } from '../components/LivePrice';
-import { PriceTicker } from '../components/PriceTicker';
+import { useEffect, useState } from 'react';
+import axios from 'axios';
+import Link from 'next/link';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { useRouter } from 'next/router';
 
-export default function Dashboard() {
+const Dashboard = () => {
+  const [user, setUser] = useState(null);
+  const [portfolio, setPortfolio] = useState({ assets: [] });
+  const [marketPrices, setMarketPrices] = useState({});
+  const router = useRouter();
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const authMeResponse = await axios.get('/api/auth/me');
+        setUser(authMeResponse.data);
+
+        if (!user) {
+          router.push('/login');
+          return;
+        }
+
+        const portfolioResponse = await axios.get('/api/portfolio');
+        setPortfolio(portfolioResponse.data);
+
+        const marketPricesResponse = await axios.get('/api/market/prices?symbols=BTC,ETH,SOL');
+        setMarketPrices(marketPricesResponse.data);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      }
+    };
+
+    fetchData();
+  }, [user, router]);
+
+  const assets = portfolio.assets || [];
+  const chartData = assets.map(asset => ({
+    name: asset.symbol,
+    price: marketPrices[asset.symbol]?.price || 0,
+    change_24h: marketPrices[asset.symbol]?.change_24h || 0
+  }));
+
   return (
-    <div className="min-h-screen bg-gray-900">
-      
-      {/* Price Ticker at top */}
-      <PriceTicker />
-      
-      <div className="p-6">
-        <div className="max-w-7xl mx-auto">
-          
-          <h1 className="text-3xl font-bold text-white mb-6">Dashboard</h1>
-          
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Portfolio Overview */}
-            <div className="lg:col-span-2 bg-gray-800 rounded-lg p-6">
-              <h2 className="text-xl font-semibold text-white mb-4">Portfolio</h2>
-              {/* Your existing portfolio content */}
-            </div>
-
-            {/* Live Market Prices */}
-            <div className="space-y-4">
-              <h2 className="text-xl font-semibold text-white">Live Prices</h2>
-              <LivePrice symbol="BTCUSDT" exchanges={['binance', 'bybit']} />
-              <LivePrice symbol="ETHUSDT" exchanges={['binance']} />
-            </div>
-
+    <div className="p-6 dark:bg-gray-900">
+      {!user ? (
+        <div>Please log in</div>
+      ) : (
+        <>
+          <h1 className="text-2xl font-bold mb-4">Welcome, {user.username}!</h1>
+          <p>Your balance is: ${user.balance_usd}</p>
+          <div className="mt-6">
+            <LineChart width={730} height={250} data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="price" stroke="#8884d8" activeDot={{ r: 8 }} />
+              <Line type="monotone" dataKey="change_24h" stroke="#82ca9d" />
+            </LineChart>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
-}
-```
+};
 
----
-
-## 📁 **Complete File Structure After Updates**
-```
-frontend/
-├── src/
-│   ├── hooks/
-│   │   └── usePriceStream.js        ← NEW
-│   ├── components/
-│   │   ├── LivePrice.jsx            ← NEW
-│   │   └── PriceTicker.jsx          ← NEW
-│   ├── pages/
-│   │   ├── Dashboard.jsx            ← UPDATED
-│   │   └── Trading.jsx              ← UPDATED
-│   ├── styles/
-│   │   └── index.css                ← UPDATED (add animation)
-│   └── ...
-├── .env                              ← UPDATED
-└── ...
+export default Dashboard;
