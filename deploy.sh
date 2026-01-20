@@ -1,3 +1,4 @@
+root@vmi3008262:/opt/Trade-Forge# cat deploy.sh
 #!/bin/bash
 ###############################################################################
 # CRYPTO PLATFORM - ONE-COMMAND DEPLOYMENT
@@ -99,11 +100,11 @@ mkdir -p logs
 
 # Build containers
 echo -e "${YELLOW}🔨 Building Docker containers (this may take a few minutes)...${NC}"
-docker-compose build --no-cache
+docker compose --no-cache
 
 # Start services
 echo -e "${YELLOW}🚀 Starting services...${NC}"
-docker-compose up -d
+docker compose up -d
 
 # Wait for database
 echo -e "${YELLOW}⏳ Waiting for database to initialize (30 seconds)...${NC}"
@@ -152,7 +153,7 @@ echo -e "🔌 ${BLUE}Backend API:${NC} ${GREEN}http://localhost:8000${NC}"
 echo -e "📚 ${BLUE}API Docs:${NC} ${GREEN}http://localhost:8000/docs${NC}"
 echo ""
 echo -e "📊 ${BLUE}Service Status:${NC}"
-docker-compose ps
+docker-compose logs
 echo ""
 echo -e "${YELLOW}📝 Next Steps:${NC}"
 echo "1. ✅ Services are running"
