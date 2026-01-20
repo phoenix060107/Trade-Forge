@@ -24,7 +24,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s  # Gives extra time for first init
+      start_period: 30s
 
   redis:
     image: redis:7-alpine
@@ -69,7 +69,6 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - ENVIRONMENT=${ENVIRONMENT}
       - DEBUG=${DEBUG}
-      # Exchange API Keys (optional)
       - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
       - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
