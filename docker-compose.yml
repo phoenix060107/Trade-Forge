@@ -1,4 +1,4 @@
-version: '3.9'
+version: '3.9'  # ← You can keep it or remove it (modern Compose ignores it)
 
 services:
   # PostgreSQL Database
@@ -6,6 +6,8 @@ services:
     image: postgres:16-alpine
     container_name: crypto_db
     restart: unless-stopped
+    env_file:
+      - .env.production           # ← ADDED: loads your env file
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -25,12 +27,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s           # ← ADDED: gives Postgres time to boot first run
 
-  # Redis (Rate Limiting + Caching + WebSocket Pub/Sub)
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: crypto_redis
     restart: unless-stopped
+    env_file:
+      - .env.production           # ← ADDED
     command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -43,6 +48,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s           # ← ADDED: grace period
 
   # FastAPI Backend
   backend:
@@ -51,6 +57,8 @@ services:
       dockerfile: Dockerfile
     container_name: crypto_backend
     restart: unless-stopped
+    env_file:
+      - .env.production           # ← ADDED (this was probably missing)
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
@@ -94,7 +102,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Build-time variables for Vite/Next.js
         - NEXT_PUBLIC_API_URL=${BACKEND_URL}
         - NEXT_PUBLIC_WS_URL=${BACKEND_WS_URL}
         - VITE_API_URL=${BACKEND_URL}
@@ -102,7 +109,6 @@ services:
     container_name: crypto_frontend
     restart: unless-stopped
     environment:
-      # Runtime variables
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${BACKEND_URL}
       - NEXT_PUBLIC_WS_URL=${BACKEND_WS_URL}
@@ -126,4 +132,3 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
