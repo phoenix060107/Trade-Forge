@@ -5,19 +5,17 @@ from sqlalchemy import desc
 from typing import List
 from pydantic import BaseModel
 from datetime import datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from .models import User, Portfolio, Trade
 from .dependencies import get_current_user, get_db
-# from .utils import get_current_price  # future real price fetch
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
-# Mock prices – replace with real Kraken/CoinGecko fetch later
+# Mock prices for MVP – later replace with real feed via WebSocket or external API
 MOCK_PRICES = {
     "BTC": Decimal("65000.00"),
     "ETH": Decimal("3200.00"),
     "SOL": Decimal("180.00"),
-    # Add more symbols as needed
 }
 
 class PortfolioAsset(BaseModel):
@@ -43,28 +41,27 @@ class OrderResponse(BaseModel):
     success: bool
     message: str
     trade_id: int | None = None
-    updated_portfolio: dict | None = None
 
 @router.get("/portfolio", response_model=PortfolioResponse)
 def get_portfolio(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get user's portfolio with calculated current value and PNL."""
+    """Get user's portfolio with calculated current value and PNL %."""
     portfolios = db.query(Portfolio).filter(Portfolio.user_id == current_user.id).all()
 
     if not portfolios:
         return PortfolioResponse(assets=[], total_value=0.0, updated_at=datetime.utcnow())
 
     assets = []
-    total_value = Decimal("0.0")
+    total_value = Decimal("0")
 
     for p in portfolios:
-        current_price = MOCK_PRICES.get(p.asset_symbol.upper(), Decimal("0.00"))
+        current_price = MOCK_PRICES.get(p.asset_symbol.upper(), Decimal("0"))
         current_value = p.quantity * current_price
         cost_basis = p.quantity * p.avg_buy_price
 
-        pnl_percent = Decimal("0.0")
+        pnl_percent = Decimal("0")
         if cost_basis != 0:
             pnl_percent = ((current_value - cost_basis) / cost_basis) * Decimal("100")
 
@@ -74,7 +71,7 @@ def get_portfolio(
             avg_price=float(p.avg_buy_price),
             current_price=float(current_price),
             current_value=float(current_value),
-            pnl_percent=float(pnl_percent.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+            pnl_percent=float(pnl_percent)
         ))
 
         total_value += current_value
@@ -102,42 +99,35 @@ def place_order(
     if symbol not in MOCK_PRICES:
         raise HTTPException(status_code=400, detail=f"Unsupported symbol: {symbol}")
 
-    current_price = MOCK_PRICES[symbol]
+    executed_price = Decimal(str(order.price if order.price is not None else MOCK_PRICES[symbol]))
 
-    # Use provided limit price or current market price
-    executed_price = order.price if order.price is not None else float(current_price)
+    total_cost = executed_price * Decimal(str(order.quantity))
 
-    # Get current portfolio entry or create new one
     portfolio_entry = db.query(Portfolio).filter(
         Portfolio.user_id == current_user.id,
         Portfolio.asset_symbol == symbol
     ).first()
 
-    # Get current USD balance
     user = db.query(User).filter(User.id == current_user.id).first()
     if not user:
         raise HTTPException(status_code=500, detail="User not found")
-
-    total_cost = Decimal(str(executed_price)) * Decimal(str(order.quantity))
 
     if order.type == "buy":
         if user.balance_usd < total_cost:
             raise HTTPException(status_code=400, detail="Insufficient USD balance")
 
         if portfolio_entry:
-            # Update average price (weighted average)
             old_cost = portfolio_entry.quantity * portfolio_entry.avg_buy_price
             new_cost = old_cost + total_cost
-            new_quantity = portfolio_entry.quantity + Decimal(str(order.quantity))
-            portfolio_entry.avg_buy_price = new_cost / new_quantity
-            portfolio_entry.quantity = new_quantity
+            new_qty = portfolio_entry.quantity + Decimal(str(order.quantity))
+            portfolio_entry.avg_buy_price = new_cost / new_qty
+            portfolio_entry.quantity = new_qty
         else:
-            # New position
             portfolio_entry = Portfolio(
                 user_id=current_user.id,
                 asset_symbol=symbol,
                 quantity=Decimal(str(order.quantity)),
-                avg_buy_price=Decimal(str(executed_price))
+                avg_buy_price=executed_price
             )
             db.add(portfolio_entry)
 
@@ -150,17 +140,16 @@ def place_order(
         portfolio_entry.quantity -= Decimal(str(order.quantity))
         user.balance_usd += total_cost
 
-        # If quantity reaches zero, optionally delete entry (or keep with 0)
         if portfolio_entry.quantity <= 0:
             db.delete(portfolio_entry)
 
-    # Record the trade
+    # Record trade
     trade = Trade(
         user_id=current_user.id,
         symbol=symbol,
         type=order.type,
         quantity=Decimal(str(order.quantity)),
-        price=Decimal(str(executed_price)),
+        price=executed_price,
         executed_at=datetime.utcnow()
     )
     db.add(trade)
@@ -170,9 +159,8 @@ def place_order(
 
     return OrderResponse(
         success=True,
-        message=f"{order.type.capitalize()} order executed at ${executed_price:.2f}",
-        trade_id=trade.id,
-        updated_portfolio={"balance_usd": float(user.balance_usd)}
+        message=f"{order.type.capitalize()} executed at ${float(executed_price):.2f}",
+        trade_id=trade.id
     )
 
 @router.get("/trades/history", response_model=List[dict])
