@@ -1,4 +1,3 @@
-// frontend/src/components/TradeHistoryTable.jsx
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
@@ -28,9 +27,9 @@ const TradeHistoryTable = () => {
       });
   }, []);
 
-  if (loading) return <div className="text-center py-4">Loading trade history...</div>;
+  if (loading) return <div className="text-center py-4 text-gray-500 dark:text-gray-400">Loading trade history...</div>;
   if (error) return <div className="text-red-500 text-center py-4">Error: {error}</div>;
-  if (trades.length === 0) return <div className="text-center py-4 text-gray-500">No trade history yet.</div>;
+  if (trades.length === 0) return <div className="text-center py-4 text-gray-500 dark:text-gray-400">No trade history yet.</div>;
 
   return (
     <div className="overflow-x-auto">
