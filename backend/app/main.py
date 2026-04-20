@@ -3,7 +3,6 @@ Main FastAPI application
 Entry point for the Crypto Simulation Platform API
 """
 
-import redis.asyncio as aioredis
 import asyncio
 
 from fastapi import FastAPI, Request
@@ -13,10 +12,15 @@ from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 
+from sqlalchemy import text
+
 from app.core.config import settings
-from app.core.security import limiter
-from app.core.database import close_db
+from app.core.security import limiter, get_security_headers
+from app.core.database import close_db, get_session
+from app.core.redis import init_redis, get_redis_client, close_redis
 from app.core.websocket_manager import WebSocketManager
+from app.services.position_monitor import start_position_monitor
+from app.services.contest_scheduler import start_contest_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -26,10 +30,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# GLOBAL STATE (WebSocket Manager & Redis)
+# GLOBAL STATE (WebSocket Manager only — Redis is in app.core.redis)
 # ============================================================================
 
-redis_client = None
 ws_manager = None
 
 # ============================================================================
@@ -38,23 +41,48 @@ ws_manager = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, ws_manager
+    global ws_manager
 
-    logger.info("🚀 Starting Crypto Platform API")
+    # ==================== STARTUP VALIDATION ====================
+    missing: list[str] = []
+    if not settings.DATABASE_URL:
+        missing.append("DATABASE_URL")
+    if not settings.REDIS_URL:
+        missing.append("REDIS_URL")
+    try:
+        _ = settings.jwt_secret
+    except ValueError:
+        missing.append("JWT_SECRET or JWT_SECRET_KEY")
+    if missing:
+        logger.critical("FATAL: Missing required environment variables: %s", missing)
+        raise RuntimeError(f"Required environment variables not set: {', '.join(missing)}")
+
+    # Warn about PLACEHOLDER values (left over from .env.example copy)
+    for var, val in [("DATABASE_URL", settings.DATABASE_URL), ("REDIS_URL", settings.REDIS_URL)]:
+        if val and "CHANGE_ME" in val:
+            logger.critical("FATAL: %s still contains placeholder 'CHANGE_ME' — update .env.production", var)
+            raise RuntimeError(f"{var} contains placeholder value — update .env.production before starting")
+
+    # Stripe warnings (non-fatal — payments are optional)
+    if not settings.stripe_secret_key:
+        logger.warning("STRIPE_SECRET_KEY not configured — payment features disabled")
+    elif settings.stripe_secret_key.startswith("sk_test_"):
+        logger.warning("STRIPE_SECRET_KEY is a test key — switch to live key in production")
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        logger.warning("STRIPE_WEBHOOK_SECRET not configured — webhook verification disabled")
+
+    logger.info("Starting Crypto Platform API")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
 
-    # Initialize Redis connection
+    # Initialize Redis via shared module
     try:
-        redis_client = await aioredis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=False
-        )
-        logger.info("✅ Redis connected")
+        await init_redis(settings.REDIS_URL)
+        logger.info("Redis connected")
     except Exception as e:
-        logger.error(f"❌ Redis connection failed: {e}")
-        redis_client = None
+        logger.error(f"Redis connection failed: {e}")
+
+    redis_client = get_redis_client()
 
     # Initialize WebSocket Manager (only if Redis is available)
     if redis_client:
@@ -72,31 +100,38 @@ async def lifespan(app: FastAPI):
             await ws_manager.subscribe("kraken", "XBT/USD")
             await ws_manager.subscribe("kraken", "ETH/USD")
 
-            logger.info("✅ Live price feeds operational")
+            logger.info("Live price feeds operational")
 
         except Exception as e:
-            logger.error(f"❌ WebSocket manager failed: {e}")
+            logger.error(f"WebSocket manager failed: {e}")
             ws_manager = None
 
-    logger.info("✅ Application startup complete")
+    # Start position monitor (stop-loss / take-profit / trailing-stop / limit fills)
+    asyncio.create_task(start_position_monitor())
+    logger.info("Position monitor task started")
+
+    # Contest scheduler (rankings every 5 min, lifecycle every 1 min)
+    asyncio.create_task(start_contest_scheduler())
+    logger.info("Contest scheduler task started")
+
+    logger.info("Application startup complete")
 
     yield  # Application runs here
 
     # ==================== SHUTDOWN ====================
-    logger.info("🛑 Shutting down Crypto Platform API")
+    logger.info("Shutting down Crypto Platform API")
 
     if ws_manager:
         await ws_manager.disconnect()
-        logger.info("✅ WebSocket feeds closed")
+        logger.info("WebSocket feeds closed")
 
-    if redis_client:
-        await redis_client.close()
-        logger.info("✅ Redis connection closed")
+    await close_redis()
+    logger.info("Redis connection closed")
 
     await close_db()
-    logger.info("✅ Database connections closed")
+    logger.info("Database connections closed")
 
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 # ============================================================================
 # CREATE FASTAPI APP
@@ -122,9 +157,18 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for key, value in get_security_headers().items():
+        response.headers[key] = value
+    return response
+
 
 # ============================================================================
 # EXCEPTION HANDLERS
@@ -169,33 +213,58 @@ async def root():
         "message": "Crypto Simulation Platform API",
         "version": "1.0.0",
         "status": "operational",
-        "environment": settings.ENVIRONMENT,
         "websocket_status": "connected" if ws_manager and ws_manager.running else "disconnected",
-        "redis_status": "connected" if redis_client else "disconnected"
+        "redis_status": "connected" if get_redis_client() else "disconnected"
     }
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "environment": settings.ENVIRONMENT,
-        "services": {
-            "redis": "up" if redis_client else "down",
-            "websocket_feeds": "up" if ws_manager and ws_manager.running else "down"
-        }
-    }
+    # Database liveness check
+    db_status = "down"
+    try:
+        async for session in get_session():
+            await session.execute(text("SELECT 1"))
+            db_status = "up"
+            break
+    except Exception:
+        pass
+
+    redis_status = "up" if get_redis_client() else "down"
+    ws_status = "up" if ws_manager and ws_manager.running else "down"
+
+    all_up = db_status == "up" and redis_status == "up"
+    overall = "healthy" if all_up else "degraded"
+    http_code = 200 if all_up else 503
+
+    return JSONResponse(
+        status_code=http_code,
+        content={
+            "status": overall,
+            "services": {
+                "database": db_status,
+                "redis": redis_status,
+                "websocket_feeds": ws_status,
+            },
+        },
+    )
 
 # ============================================================================
 # API ROUTES
 # ============================================================================
 
-from app.api import auth, users, wallet, trading, admin, market
+from app.api import auth, users, wallet, trading, admin, market, contests, leaderboard, payments
 
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(wallet.router, prefix="/wallet", tags=["Wallet"])
 app.include_router(trading.router, prefix="/trading", tags=["Trading"])
 app.include_router(market.router, prefix="/market", tags=["Market Data"])
+# admin_router uses its own /admin/contests prefix (registered before admin.router
+# so its contest endpoints take precedence over the stubs in admin.py)
+app.include_router(contests.admin_router)
+app.include_router(contests.router, prefix="/contests", tags=["Contests"])
+app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard"])
+app.include_router(payments.router, prefix="/payments", tags=["Payments"])
 app.include_router(admin.router)
 
 # ============================================================================

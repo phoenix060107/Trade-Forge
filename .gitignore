@@ -1,0 +1,37 @@
+# Environment files (contain secrets — DB passwords, JWT keys, SMTP creds)
+.env
+.env.*
+.env.production
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Node
+node_modules/
+.next/
+out/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Database backups (may contain user data)
+database/backups/*.sql
